@@ -10,7 +10,7 @@ void set(const std::string& key, const std::string& value) {
 }
 
 std::string get(const std::string& key) {
-    return database.at(key); //throws if the key doesn't exist
+    return database.at(key) + "\n"; //throws if the key doesn't exist
 }
 
 
@@ -29,33 +29,59 @@ bool exists(const std::string& key) {
 std::string execute(const std::string &input) {
     std::istringstream parser(input);
     std::string command, key, value;
+    parser >> command; //creates parser to get command
+    if (command.empty()) {
+        return "ERROR: Enter a command and its key and/or value.\n";
+    }
 
-    //creates parser to go through arguments
-    parser >> command >> key >> value;
-            
-    //based on user request, execute proper command
     if (command == "SET") {
+        //make sure there is a key
+        if (!(parser >> key)) {
+            return "ERROR: SET expects exactly one key.\n";
+        }
+        parser >> std::ws; //skip all whitespace
+        getline(parser, value); //set the rest of parser to value
+
+        //make sure there is a value
+        if (value.empty()) {
+            return "ERROR: SET expects exactly one value.\n";
+        }
         set(key,value);
-        return "DONE";
+        return "DONE.\n";
     } 
-            
-    else if (command == "GET") {
-        if (exists(key)) {
+
+    if (command == "GET") {
+        //make sure there is at least one key
+        if (!(parser >> key)) {
+            return "ERROR: GET expects exactly one key.\n";
+        }
+        //make sure there is no more than one key
+        if (parser >> value) {
+            return "ERROR: GET expects exactly one key.\n";
+        }
+
+        if (exists(key)) { //if the key exists, execute the function
             return get(key);
         } else {
-            return "Key \"" + key + "\" does not exist\n";
+            return "ERROR: Key \"" + key + "\" does not exist.\n";
         }
     } 
-            
-    else if (command == "DEL") {
-        if (del(key)) {
-            return "DONE";
+
+    if (command == "DEL") {
+        //make sure there is at least one key
+        if (!(parser >> key)) {
+            return "ERROR: DEL expects exactly one key.\n";
+        }
+        //make sure there is no more than one key
+        if (parser >> value) {
+            return "ERROR: DEL expects exactly one key.\n";
+        }
+        if (del(key)) { //success
+            return "DONE.\n";
         } else {
-            return "Key \"" + key + "\" does not exist\n";
+            return "ERROR: Key \"" + key + "\" does not exist.\n";
         }
     } 
            
-    else {
-        return "Unknown command";
-    }
+    return "ERROR: Unknown command.\n";
 }
