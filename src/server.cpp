@@ -12,12 +12,14 @@
 #include "kv_store.h"
 #include <mutex>
 #include <thread>
+#include "ThreadPool.h"
 
 #define PORT "3490"
 #define BACKLOG 10
 
 std::mutex gLock;
 std::mutex logMutex;
+ThreadPool pool(4); // Create a thread pool with 4 worker threads
 
 // Print so that multiple threads don't print at the same time
 void log(const std::string &message)
@@ -49,6 +51,7 @@ bool sendAll(int socket, const std::string &message)
 
 void handle_client(int socket)
 {
+    log("Started client");
     char buf[1024]; // Stores the user input
     // Run until the user exits
     while (true)
@@ -87,6 +90,7 @@ void handle_client(int socket)
             break;
         }
     }
+    log("Finished client");
     close(socket);
 }
 
@@ -190,8 +194,10 @@ int main()
         }
         log("server: got connection from " + std::string(s));
 
-        std::thread client(&handle_client, new_fd); // Create separate client thread
-        client.detach(); // Let that client thread run independently
+        // Add this client to the queue awaiting a worker thread
+        pool.enqueue([new_fd] {
+            handle_client(new_fd);
+        });
     }
     return 0;
 }

@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(server
     src/server.cpp
     src/kv_store.cpp
+    src/ThreadPool.cpp
 )
 
 add_executable(client
