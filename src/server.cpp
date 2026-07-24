@@ -51,7 +51,6 @@ bool sendAll(int socket, const std::string &message)
 
 void handle_client(int socket)
 {
-    log("Started client");
     char buf[1024]; // Stores the user input
     // Run until the user exits
     while (true)
@@ -90,7 +89,6 @@ void handle_client(int socket)
             break;
         }
     }
-    log("Finished client");
     close(socket);
 }
 
