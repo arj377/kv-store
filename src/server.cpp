@@ -104,13 +104,15 @@ void *get_in_addr(struct sockaddr *sa)
 
 int main()
 {
-    int status, sockfd, new_fd; // Status for getaddrinfo, and sockets for communication
+    int status, sockfd, new_fd;// Status for getaddrinfo, and sockets for communication
     struct addrinfo hints, *p;
     struct addrinfo *servinfo;          // Holds the linked list from getaddrinfo
     int yes = 1;                        // For reuseaddr
     struct sockaddr_storage their_addr; // Info about client's IP
     socklen_t addr_size;
     char s[INET6_ADDRSTRLEN]; // Holds the string to present in the terminal
+
+    loadDatabase(); // Load database from disk
 
     memset(&hints, 0, sizeof(hints)); // Clear hints first
     hints.ai_family = AF_UNSPEC;      // IPv6 or IPv4
