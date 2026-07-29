@@ -9,6 +9,7 @@ add_executable(server
     src/server.cpp
     src/kv_store.cpp
     src/ThreadPool.cpp
+    src/wal.cpp
 )
 
 add_executable(client

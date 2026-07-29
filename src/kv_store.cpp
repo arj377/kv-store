@@ -5,13 +5,58 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include "wal.h"
 
 #define BUFFSIZE 4096
 #define MODE 0644 // Owner can read and write, everyone else can only read
 
-std::unordered_map<std::string, std::string> database;
+// Save the database and reset the WAL page
+KVStore::KVStore() : wal("wal.log")
+{
+    loadDatabase();
+    recover();
+}
 
-void loadDatabase()
+KVStore::~KVStore()
+{
+    // Nothing to do
+}
+
+// Recover from WAL and redo actions
+void KVStore::recover()
+{
+    auto lines = wal.replay();
+
+    for (const auto& line : lines)
+    {
+        LogRecord rec;
+        std::string error;
+
+        if (!parseCommand(line, rec, error))
+        {
+            std::cerr << "Invalid WAL record: " << error << '\n';
+            continue;
+        }
+
+        if (rec.op == SET)
+        {
+            set(rec.key, rec.value, false);
+        }
+        else if (rec.op == DEL)
+        {
+            del(rec.key, false);
+        }
+    }
+}   
+
+
+void KVStore::checkpoint()
+{
+    saveDatabase();
+    wal.truncate();
+}
+
+void KVStore::loadDatabase()
 {
     int n, fd; // Stores the amount of bytes read from database.db and the fd for database.db
     char buf[BUFFSIZE];
@@ -54,10 +99,13 @@ void loadDatabase()
     {
         perror("read");
     }
-    close(fd);
+    if (close(fd) == -1)
+    {
+        perror("close");
+    }
 }
 
-void saveDatabase()
+void KVStore::saveDatabase()
 {
     int fd, n;
     if ((fd = open("database.db", O_WRONLY | O_CREAT | O_TRUNC, MODE)) == -1) // Open the file and overwrite anything from before
@@ -77,7 +125,10 @@ void saveDatabase()
             if (n == -1)
             {
                 perror("write");
-                close(fd);
+                if (close(fd) == -1)
+                {
+                    perror("close");
+                }
                 return;
             }
             bytesWritten += n;
@@ -87,109 +138,177 @@ void saveDatabase()
     {
         perror("fsync");
     }
-    close(fd);
+    if (close(fd) == -1)
+    {
+        perror("close");
+    }
 }
 
-bool exists(const std::string &key)
+bool KVStore::exists(const std::string &key)
 {
     return database.find(key) != database.end();
 }
 
-void set(const std::string &key, const std::string &value)
+void KVStore::set(const std::string &key, const std::string &value, bool log)
 {
+    // If this is not being recovered, log it to the WAL
+    if (log)
+    {
+        LogRecord rec;
+        rec.key = key;
+        rec.value = value;
+        rec.op = SET;
+        wal.append(rec);
+        wal.flush();
+        writeCount++;
+
+        // Once the checkpoint is reached, send everything to  disk
+        if (writeCount >= 100)
+        {
+            checkpoint();
+            writeCount = 0;
+        }
+    }
+
     database[key] = value;
-    saveDatabase(); // Save changes
 }
 
-std::string get(const std::string &key)
+std::string KVStore::get(const std::string &key)
 {
     return database.at(key) + "\n"; // Throws if the key doesn't exist
 }
 
-bool del(const std::string &key)
+bool KVStore::del(const std::string &key, bool log)
 {
+    // If this is not being recovered, log it to the WAL
+   if (log)
+    {
+        LogRecord rec;
+        rec.key = key;
+        rec.op = DEL;
+        wal.append(rec);
+        wal.flush();
+        writeCount++;
+
+        // Once the checkpoint is reached, send everything to  disk
+        if (writeCount >= 100)
+        {
+            checkpoint();
+            writeCount = 0;
+        }
+    }
+
     if (database.find(key) == database.end())
     {
         return false;
     }
     database.erase(key);
-    saveDatabase(); // Save changes
     return true;
 }
 
-std::string execute(const std::string &input)
+bool KVStore::parseCommand(const std::string& line, LogRecord& rec, std::string& error)
 {
-    std::istringstream parser(input);
+    std::istringstream parser(line);
     std::string command, key, value;
-    parser >> command; // creates parser to get command
+    parser >> command; // Creates parser to get command
     if (command.empty())
     {
-        return "ERROR: Enter a command and its key and/or value.\n";
+        error = "No command.";
+        return false;
     }
-
     if (command == "SET")
     {
-        // make sure there is a key
+        // Make sure there is a key
         if (!(parser >> key))
         {
-            return "ERROR: SET expects exactly one key.\n";
+            error = "Missing key.";
+            return false;
         }
-        parser >> std::ws;      // skip all whitespace
-        getline(parser, value); // set the rest of parser to value
+        parser >> std::ws;
+        getline(parser, value); // Set the rest of parser to value
 
-        // make sure there is a value
+        // Make sure there is a value
         if (value.empty())
         {
-            return "ERROR: SET expects exactly one value.\n";
+            error = "Missing value.";
+            return false;
         }
-        set(key, value);
-        return "DONE.\n";
+        rec.op = SET;
+        rec.key = key;
+        rec.value = value;
     }
-
-    if (command == "GET")
+    else if (command == "GET")
     {
-        // make sure there is at least one key
+        // make sure there is one key
         if (!(parser >> key))
         {
-            return "ERROR: GET expects exactly one key.\n";
+            error = "Missing key";
+            return false;
         }
         // make sure there is no more than one key
         if (parser >> value)
         {
-            return "ERROR: GET expects exactly one key.\n";
+            error = "Too many arguments for GET.";
+            return false;
         }
-
-        if (exists(key))
-        { // if the key exists, execute the function
-            return get(key);
-        }
-        else
-        {
-            return "ERROR: Key \"" + key + "\" does not exist.\n";
-        }
+        rec.op = GET;
+        rec.key = key;
+        rec.value = "";
     }
 
-    if (command == "DEL")
+    else if (command == "DEL")
     {
-        // make sure there is at least one key
+        // Make sure there is at least one key
         if (!(parser >> key))
         {
-            return "ERROR: DEL expects exactly one key.\n";
+            error = "Missing key.";
+            return false;
         }
-        // make sure there is no more than one key
+        // Make sure there is no more than one key
         if (parser >> value)
         {
-            return "ERROR: DEL expects exactly one key.\n";
+            error = "Too many arguments for DEL.";
+            return false;
         }
-        if (del(key))
-        { // success
-            return "DONE.\n";
-        }
-        else
-        {
-            return "ERROR: Key \"" + key + "\" does not exist.\n";
-        }
+        rec.op = DEL;
+        rec.key = key;
+        rec.value = "";
+    }
+    else
+    {
+        error = "Invalid command.";
+        return false;
+    }
+    
+    return true;
+}
+std::string KVStore::execute(const std::string &input)
+{
+    std::string error;
+    LogRecord record;
+    if(!parseCommand(input, record, error))
+    {
+        return "ERROR: " + error + '\n';
     }
 
-    return "ERROR: Unknown command.\n";
+    if (record.op == SET)
+    {
+        set(record.key, record.value);
+    }
+    else if (record.op == GET)
+    {
+        if (!exists(record.key))
+        { 
+            return "ERROR: Key does not exist.\n";
+        }
+        return get(record.key); // If the key exists, execute the function
+    }
+    else
+    {
+        if (!del(record.key))
+        {
+            return "ERROR: Key does not exist.\n";
+        }
+    }
+    return "DONE!\n";
 }

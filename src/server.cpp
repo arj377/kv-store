@@ -13,12 +13,14 @@
 #include <mutex>
 #include <thread>
 #include "ThreadPool.h"
+#include "wal.h"
 
 #define PORT "3490"
 #define BACKLOG 10
 
 std::mutex gLock;
 std::mutex logMutex;
+KVStore store;
 ThreadPool pool(4); // Create a thread pool with 4 worker threads
 
 // Print so that multiple threads don't print at the same time
@@ -81,7 +83,7 @@ void handle_client(int socket)
         std::string response;
         { // Limit the lock's scope so the mutex is released before sendAll().
             std::lock_guard<std::mutex> clientLock(gLock);
-            response = execute(input); // based on command, GET, SET, or DEL
+            response = store.execute(input); // Based on command, GET, SET, or DEL
         }
         if (!sendAll(socket, response))
         {
@@ -111,8 +113,6 @@ int main()
     struct sockaddr_storage their_addr; // Info about client's IP
     socklen_t addr_size;
     char s[INET6_ADDRSTRLEN]; // Holds the string to present in the terminal
-
-    loadDatabase(); // Load database from disk
 
     memset(&hints, 0, sizeof(hints)); // Clear hints first
     hints.ai_family = AF_UNSPEC;      // IPv6 or IPv4
