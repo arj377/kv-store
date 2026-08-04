@@ -1,226 +1,239 @@
 #include "kv_store.h"
+#include "wal.h"
 #include <iostream>
 #include <sstream>
-#include <unordered_map>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include "wal.h"
-
-#define BUFFSIZE 4096
-#define MODE 0644 // Owner can read and write, everyone else can only read
 
 // Save the database and reset the WAL page
-KVStore::KVStore() : wal("wal.log")
-{
-    loadDatabase();
+KVStore::KVStore() : wal("wal.log") {
+    if (!bufferPoolManager.pageExists(0)) {
+        Page* p = bufferPoolManager.newPage();
+        if (p != nullptr) {
+            bufferPoolManager.unpinPage(p->getPageID());
+        }
+    }
     recover();
 }
 
-KVStore::~KVStore()
-{
+KVStore::~KVStore() {
     // Nothing to do
 }
 
 // Recover from WAL and redo actions
-void KVStore::recover()
-{
+void KVStore::recover() {
     auto lines = wal.replay();
 
-    for (const auto& line : lines)
-    {
+    for (const auto &line : lines) {
         LogRecord rec;
         std::string error;
 
-        if (!parseCommand(line, rec, error))
-        {
+        if (!parseCommand(line, rec, error)) {
             std::cerr << "Invalid WAL record: " << error << '\n';
             continue;
         }
 
-        if (rec.op == SET)
-        {
+        if (rec.op == SET) {
             set(rec.key, rec.value, false);
-        }
-        else if (rec.op == DEL)
-        {
+        } else if (rec.op == DEL) {
             del(rec.key, false);
         }
     }
-}   
+}
 
-
-void KVStore::checkpoint()
-{
-    saveDatabase();
+void KVStore::checkpoint() {
+    bufferPoolManager.flushAllPages();
     wal.truncate();
 }
 
-void KVStore::loadDatabase()
-{
-    int n, fd; // Stores the amount of bytes read from database.db and the fd for database.db
-    char buf[BUFFSIZE];
-    // Open the database file and create if it doesn't exist
-    if ((fd = open("database.db", O_RDWR | O_CREAT, MODE)) == -1)
-    {
-        perror("open");
-        return;
-    }
+bool KVStore::set(const std::string &key, const std::string &value, bool log) {
+    page_id_t targetPageID = -1;
+    bool updating = false;
+    Page *targetPage = nullptr;
 
-    while ((n = read(fd, buf, BUFFSIZE)) > 0) // Keep readng until EOF
-    {
-        std::string buffer(buf, n);
-        int keyIndex = 0, valueIndex;
-        std::string key, value;
-        bool space = false;
+    // Find either:
+    // 1. the page containing the key
+    // 2. the first page with enough free space
+    for (page_id_t id = 0; id < bufferPoolManager.getPageCount(); id++) {
+        Page *page = bufferPoolManager.fetchPage(id);
 
-        for (int i = 0; i < buffer.size(); i++)
-        {
-            char c = buffer[i];
-            if (c == ' ' && space == false) // If first space, set this as the key
-            {
-                key = buffer.substr(keyIndex, i - keyIndex);
-                valueIndex = i + 1;
-                space = true;
-            }
-            if (c == '\n') // If a newline is hit, set this as the key
-            {
-                value = buffer.substr(valueIndex, i - valueIndex);
-                database[key] = value; // Update database
-                if (i + 1 < buffer.size())
-                {
-                    keyIndex = i + 1;
-                }
-                space = false;
-            }
+        if (page == nullptr) {
+            continue;
         }
-    }
-    if (n == -1)
-    {
-        perror("read");
-    }
-    if (close(fd) == -1)
-    {
-        perror("close");
-    }
-}
 
-void KVStore::saveDatabase()
-{
-    int fd, n;
-    if ((fd = open("database.db", O_WRONLY | O_CREAT | O_TRUNC, MODE)) == -1) // Open the file and overwrite anything from before
-    {
-        perror("open");
-        return;
-    }
-    for (const auto &[key, value] : database)
-    {
-        std::string line = key + " " + value + "\n";
-        int bytesWritten = 0;
-
-        // Loop until all bytes are written
-        while (bytesWritten < line.size()) // Continue until entire line is written
-        {
-            n = write(fd, line.c_str() + bytesWritten, line.size() - bytesWritten);
-            if (n == -1)
-            {
-                perror("write");
-                if (close(fd) == -1)
-                {
-                    perror("close");
-                }
-                return;
-            }
-            bytesWritten += n;
+        if (page->get(key) != std::nullopt) {
+            updating = true;
+            targetPageID = id;
+            bufferPoolManager.unpinPage(id);
+            break;
         }
-    }
-    if (fsync(fd) == -1) // Immediately write all changes to the disk
-    {
-        perror("fsync");
-    }
-    if (close(fd) == -1)
-    {
-        perror("close");
-    }
-}
 
-bool KVStore::exists(const std::string &key)
-{
-    return database.find(key) != database.end();
-}
+        if (targetPageID == -1 &&
+            page->hasSpace(key.size(), value.size())) {
+            targetPageID = id;
+        }
 
-void KVStore::set(const std::string &key, const std::string &value, bool log)
-{
-    // If this is not being recovered, log it to the WAL
-    if (log)
-    {
+        bufferPoolManager.unpinPage(id);
+    }
+
+    // Need another page
+    if (!updating && targetPageID == -1) {
+        targetPage = bufferPoolManager.newPage();
+
+        if (targetPage == nullptr) {
+            return false;
+        }
+
+        targetPageID = targetPage->getPageID();
+
+        if (!targetPage->hasSpace(key.size(), value.size())) {
+            bufferPoolManager.unpinPage(targetPageID);
+            return false;
+        }
+
+        bufferPoolManager.unpinPage(targetPageID);
+    }
+
+    // WAL must hit disk before modifying the page
+    if (log) {
         LogRecord rec;
         rec.key = key;
         rec.value = value;
         rec.op = SET;
+
         wal.append(rec);
         wal.flush();
-        writeCount++;
-
-        // Once the checkpoint is reached, send everything to  disk
-        if (writeCount >= 100)
-        {
-            checkpoint();
-            writeCount = 0;
-        }
     }
 
-    database[key] = value;
-}
+    targetPage = bufferPoolManager.fetchPage(targetPageID);
 
-std::string KVStore::get(const std::string &key)
-{
-    return database.at(key) + "\n"; // Throws if the key doesn't exist
-}
-
-bool KVStore::del(const std::string &key, bool log)
-{
-    // If this is not being recovered, log it to the WAL
-   if (log)
-    {
-        LogRecord rec;
-        rec.key = key;
-        rec.op = DEL;
-        wal.append(rec);
-        wal.flush();
-        writeCount++;
-
-        // Once the checkpoint is reached, send everything to  disk
-        if (writeCount >= 100)
-        {
-            checkpoint();
-            writeCount = 0;
-        }
-    }
-
-    if (database.find(key) == database.end())
-    {
+    if (targetPage == nullptr) {
         return false;
     }
-    database.erase(key);
+
+    bool success;
+
+    if (updating) {
+        success = targetPage->update(key, value);
+    } else {
+        success = targetPage->insert(key, value);
+    }
+
+    if (success) {
+        targetPage->setDirty(true);
+    }
+
+    bufferPoolManager.unpinPage(targetPageID);
+
+    if (!success) {
+        return false;
+    }
+
+    if (log) {
+        writeCount++;
+
+        if (writeCount >= 100) {
+            checkpoint();
+            writeCount = 0;
+        }
+    }
+
     return true;
 }
 
-bool KVStore::parseCommand(const std::string& line, LogRecord& rec, std::string& error)
-{
+std::optional<std::string> KVStore::get(const std::string &key) {
+    for (page_id_t id = 0; id < bufferPoolManager.getPageCount(); id++) {
+        Page *page = bufferPoolManager.fetchPage(id);
+
+        if (page == nullptr) {
+            continue;
+        }
+
+        std::optional<std::string> value = page->get(key);
+        bufferPoolManager.unpinPage(id);
+
+        if (value != std::nullopt) {
+            return value;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool KVStore::del(const std::string &key, bool log) {
+    page_id_t targetPageID = -1;
+
+    // Find the page containing the key.
+    for (page_id_t id = 0; id < bufferPoolManager.getPageCount(); id++) {
+        Page *page = bufferPoolManager.fetchPage(id);
+
+        if (page == nullptr) {
+            continue;
+        }
+
+        bool found = page->get(key) != std::nullopt;
+        bufferPoolManager.unpinPage(id);
+
+        if (found) {
+            targetPageID = id;
+            break;
+        }
+    }
+
+    if (targetPageID == -1) {
+        return false;
+    }
+
+    // WAL must reach disk before the page modification.
+    if (log) {
+        LogRecord rec;
+        rec.key = key;
+        rec.value = "";
+        rec.op = DEL;
+
+        wal.append(rec);
+        wal.flush();
+    }
+
+    Page *page = bufferPoolManager.fetchPage(targetPageID);
+
+    if (page == nullptr) {
+        return false;
+    }
+
+    bool success = page->deletePair(key);
+
+    if (success) {
+        page->setDirty(true);
+    }
+
+    bufferPoolManager.unpinPage(targetPageID);
+
+    if (!success) {
+        return false;
+    }
+
+    if (log) {
+        writeCount++;
+
+        if (writeCount >= 100) {
+            checkpoint();
+            writeCount = 0;
+        }
+    }
+
+    return true;
+}
+
+bool KVStore::parseCommand(const std::string &line, LogRecord &rec, std::string &error) {
     std::istringstream parser(line);
     std::string command, key, value;
     parser >> command; // Creates parser to get command
-    if (command.empty())
-    {
+    if (command.empty()) {
         error = "No command.";
         return false;
     }
-    if (command == "SET")
-    {
+    if (command == "SET") {
         // Make sure there is a key
-        if (!(parser >> key))
-        {
+        if (!(parser >> key)) {
             error = "Missing key.";
             return false;
         }
@@ -228,26 +241,21 @@ bool KVStore::parseCommand(const std::string& line, LogRecord& rec, std::string&
         getline(parser, value); // Set the rest of parser to value
 
         // Make sure there is a value
-        if (value.empty())
-        {
+        if (value.empty()) {
             error = "Missing value.";
             return false;
         }
         rec.op = SET;
         rec.key = key;
         rec.value = value;
-    }
-    else if (command == "GET")
-    {
+    } else if (command == "GET") {
         // make sure there is one key
-        if (!(parser >> key))
-        {
+        if (!(parser >> key)) {
             error = "Missing key";
             return false;
         }
         // make sure there is no more than one key
-        if (parser >> value)
-        {
+        if (parser >> value) {
             error = "Too many arguments for GET.";
             return false;
         }
@@ -256,57 +264,46 @@ bool KVStore::parseCommand(const std::string& line, LogRecord& rec, std::string&
         rec.value = "";
     }
 
-    else if (command == "DEL")
-    {
+    else if (command == "DEL") {
         // Make sure there is at least one key
-        if (!(parser >> key))
-        {
+        if (!(parser >> key)) {
             error = "Missing key.";
             return false;
         }
         // Make sure there is no more than one key
-        if (parser >> value)
-        {
+        if (parser >> value) {
             error = "Too many arguments for DEL.";
             return false;
         }
         rec.op = DEL;
         rec.key = key;
         rec.value = "";
-    }
-    else
-    {
+    } else {
         error = "Invalid command.";
         return false;
     }
-    
+
     return true;
 }
-std::string KVStore::execute(const std::string &input)
-{
+std::string KVStore::execute(const std::string &input) {
     std::string error;
     LogRecord record;
-    if(!parseCommand(input, record, error))
-    {
+    if (!parseCommand(input, record, error)) {
         return "ERROR: " + error + '\n';
     }
 
-    if (record.op == SET)
-    {
-        set(record.key, record.value);
-    }
-    else if (record.op == GET)
-    {
-        if (!exists(record.key))
-        { 
-            return "ERROR: Key does not exist.\n";
+    if (record.op == SET) {
+        if (!set(record.key, record.value)) {
+            return ("Error: Could not set key and value.\n");
         }
-        return get(record.key); // If the key exists, execute the function
-    }
-    else
-    {
-        if (!del(record.key))
-        {
+    } else if (record.op == GET) {
+        auto getValue = get(record.key);
+        if (!getValue) {
+            return ("ERROR: Key does not exist.\n");
+        }
+        return getValue.value() + "\n"; // If the key exists, execute the function
+    } else if (record.op == DEL) {
+        if (!del(record.key)) {
             return "ERROR: Key does not exist.\n";
         }
     }

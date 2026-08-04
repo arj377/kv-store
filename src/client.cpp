@@ -1,14 +1,14 @@
-#include <iostream>            
+#include <arpa/inet.h>
+#include <iostream>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <arpa/inet.h>
 #include <string>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define PORT "3490"
 #define MAXDATASIZE 1024
@@ -16,13 +16,13 @@
 // Convert based on if its IPv6 or IPv4
 void *get_in_addr(struct sockaddr *sa) {
     if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
+        return &(((struct sockaddr_in *)sa)->sin_addr);
     }
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+    return &(((struct sockaddr_in6 *)sa)->sin6_addr);
 }
 
 // Keep sending until all the data is sent
-bool sendAll(int socket, const std::string& message) {
+bool sendAll(int socket, const std::string &message) {
     size_t total = message.size();
     size_t counter = 0;
 
@@ -30,10 +30,9 @@ bool sendAll(int socket, const std::string& message) {
         int charSent = send(socket, message.data() + counter, total - counter, 0);
         if (charSent <= 0) {
             return false;
-        }
-        else {
+        } else {
             counter += charSent;
-        }  
+        }
     }
     return true;
 }
@@ -42,13 +41,13 @@ int main(int argc, char *argv[]) {
     int status, sockfd, numBytes; // Status for getaddrinfo, and sockets for communication
     struct addrinfo hints, *p;
     struct addrinfo *servinfo; // Holds the linked list from getaddrinfo
-    char buf[MAXDATASIZE]; // Holds the string we receive
-    char s[INET6_ADDRSTRLEN]; // Holds the string to present in the terminal
+    char buf[MAXDATASIZE];     // Holds the string we receive
+    char s[INET6_ADDRSTRLEN];  // Holds the string to present in the terminal
 
     memset(&hints, 0, sizeof(hints)); // Clear hints
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    
+
     // Make sure a clall to the program and IP address is there
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " hostname\n";
@@ -68,7 +67,7 @@ int main(int argc, char *argv[]) {
             perror("server: socket");
             continue;
         }
-        
+
         // Convert IP address to readable format and print
         if (inet_ntop(p->ai_family, get_in_addr(p->ai_addr), s, sizeof(s)) == NULL) {
             perror("inet_ntop");
@@ -84,7 +83,6 @@ int main(int argc, char *argv[]) {
             continue;
         }
         break;
-        
     }
 
     // Make sure socket is found
@@ -92,7 +90,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "client: failed to connect\n");
         return 2;
     }
-    
+
     // Print readable IP address format
     inet_ntop(p->ai_family, get_in_addr(p->ai_addr), s, sizeof s);
     printf("client: connected to %s\n", s);
@@ -108,7 +106,7 @@ int main(int argc, char *argv[]) {
             perror("send");
             break;
         }
-        
+
         numBytes = recv(sockfd, buf, sizeof(buf), 0);
         if (numBytes == -1) {
             perror("recv");
@@ -117,9 +115,9 @@ int main(int argc, char *argv[]) {
 
         else if (numBytes == 0) {
             std::cout << "Server disconnected.\n";
-            break;   // Go back to accept() and wait for another client
+            break; // Go back to accept() and wait for another client
         }
-        
+
         // Convert chars into a C++ string
         std::string response(buf, numBytes);
         std::cout << response << '\n';
@@ -128,7 +126,7 @@ int main(int argc, char *argv[]) {
             break;
         }
     }
-    
+
     // Close the connection
     close(sockfd);
     return 0;
