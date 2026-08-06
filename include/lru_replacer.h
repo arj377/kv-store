@@ -1,13 +1,13 @@
 #pragma once
 
 #include "config.h"
-#include <list>
-#include <unordered_map>
-#include <optional>
 #include <cstddef>
+#include <list>
+#include <optional>
+#include <unordered_map>
 
 class LRUReplacer {
-public:
+  public:
     LRUReplacer();
     std::optional<frame_id_t> evict();
     void recordAccess(frame_id_t);
@@ -15,7 +15,8 @@ public:
     void remove(frame_id_t frame);
 
     size_t size();
-private:
+
+  private:
     std::list<frame_id_t> recencyList;
     std::unordered_map<frame_id_t, std::list<frame_id_t>::iterator> table;
     std::unordered_map<frame_id_t, bool> isEvictable;

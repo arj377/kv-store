@@ -4,9 +4,9 @@
 #include <sstream>
 
 // Save the database and reset the WAL page
-KVStore::KVStore() : wal("wal.log") {
+KVStore::KVStore() : wal("wal.log"), writeCount(0) {
     if (!bufferPoolManager.pageExists(0)) {
-        Page* p = bufferPoolManager.newPage();
+        Page *p = bufferPoolManager.newPage();
         if (p != nullptr) {
             bufferPoolManager.unpinPage(p->getPageID());
         }
@@ -45,6 +45,7 @@ void KVStore::checkpoint() {
 }
 
 bool KVStore::set(const std::string &key, const std::string &value, bool log) {
+    std::lock_guard<std::mutex> lock(mutex_);
     page_id_t targetPageID = -1;
     bool updating = false;
     Page *targetPage = nullptr;
@@ -66,8 +67,7 @@ bool KVStore::set(const std::string &key, const std::string &value, bool log) {
             break;
         }
 
-        if (targetPageID == -1 &&
-            page->hasSpace(key.size(), value.size())) {
+        if (targetPageID == -1 && page->hasSpace(key.size(), value.size())) {
             targetPageID = id;
         }
 
@@ -140,6 +140,7 @@ bool KVStore::set(const std::string &key, const std::string &value, bool log) {
 }
 
 std::optional<std::string> KVStore::get(const std::string &key) {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (page_id_t id = 0; id < bufferPoolManager.getPageCount(); id++) {
         Page *page = bufferPoolManager.fetchPage(id);
 
@@ -150,7 +151,7 @@ std::optional<std::string> KVStore::get(const std::string &key) {
         std::optional<std::string> value = page->get(key);
         bufferPoolManager.unpinPage(id);
 
-        if (value != std::nullopt) {
+        if (value.has_value()) {
             return value;
         }
     }
@@ -159,6 +160,7 @@ std::optional<std::string> KVStore::get(const std::string &key) {
 }
 
 bool KVStore::del(const std::string &key, bool log) {
+    std::lock_guard<std::mutex> lock(mutex_);
     page_id_t targetPageID = -1;
 
     // Find the page containing the key.
@@ -284,28 +286,4 @@ bool KVStore::parseCommand(const std::string &line, LogRecord &rec, std::string 
     }
 
     return true;
-}
-std::string KVStore::execute(const std::string &input) {
-    std::string error;
-    LogRecord record;
-    if (!parseCommand(input, record, error)) {
-        return "ERROR: " + error + '\n';
-    }
-
-    if (record.op == SET) {
-        if (!set(record.key, record.value)) {
-            return ("Error: Could not set key and value.\n");
-        }
-    } else if (record.op == GET) {
-        auto getValue = get(record.key);
-        if (!getValue) {
-            return ("ERROR: Key does not exist.\n");
-        }
-        return getValue.value() + "\n"; // If the key exists, execute the function
-    } else if (record.op == DEL) {
-        if (!del(record.key)) {
-            return "ERROR: Key does not exist.\n";
-        }
-    }
-    return "DONE!\n";
 }

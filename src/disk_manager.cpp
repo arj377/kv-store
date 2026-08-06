@@ -1,18 +1,18 @@
 #include "disk_manager.h"
 #include "page.h"
 
-#include <fcntl.h>   // open
+#include <algorithm>
+#include <fcntl.h> // open
+#include <iostream>
 #include <stdexcept> // std::runtime_error (if you throw exceptions)
 #include <unistd.h>  // read, write, lseek, close
-#include <algorithm>
-#include <iostream>
 
 DiskManager::DiskManager() {
     if ((fd = open("database.db", O_CREAT | O_RDWR, 0644)) == -1) {
         perror("open");
         throw std::runtime_error("Failed to open database.db");
     }
-    
+
     off_t fileSize = lseek(fd, 0, SEEK_END);
     if (fileSize == -1) {
         perror("lseek");
@@ -21,9 +21,6 @@ DiskManager::DiskManager() {
     }
 
     nextAvailableID = fileSize / PAGE_SIZE;
-    std::cout << "fileSize = " << fileSize
-          << ", nextAvailableID = " << nextAvailableID
-          << '\n';
 }
 
 DiskManager::~DiskManager() {

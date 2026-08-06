@@ -61,7 +61,7 @@ void Page::clearData() {
     header->freeSpaceOffset = sizeof(PageHeader);
 }
 
-PageHeader* Page::getHeader() {
+PageHeader *Page::getHeader() {
     return reinterpret_cast<PageHeader *>(data.data());
 }
 
@@ -183,19 +183,13 @@ std::optional<RecordInfo> Page::findRecord(const std::string &key) {
         std::memcpy(&keyLength, data.data() + offset, sizeof(uint16_t));
 
         uint16_t valueLength;
-        std::memcpy(&valueLength,
-                    data.data() + offset + sizeof(uint16_t),
-                    sizeof(uint16_t));
+        std::memcpy(&valueLength, data.data() + offset + sizeof(uint16_t), sizeof(uint16_t));
 
         size_t keyOffset = offset + 2 * sizeof(uint16_t);
 
         if (keyLength == key.size() &&
             std::memcmp(key.data(), data.data() + keyOffset, keyLength) == 0) {
-            return RecordInfo{
-                offset,
-                keyLength,
-                valueLength
-            };
+            return RecordInfo{offset, keyLength, valueLength};
         }
 
         offset += 2 * sizeof(uint16_t) + keyLength + valueLength;

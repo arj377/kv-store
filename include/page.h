@@ -1,9 +1,9 @@
 #pragma once
 
-#include <cstdint>
 #include <array>
-#include <string>
+#include <cstdint>
 #include <optional>
+#include <string>
 
 #include "config.h"
 
@@ -19,10 +19,10 @@ struct RecordInfo {
 };
 
 class Page {
-public:
+  public:
     Page(page_id_t);
     Page();
-    std::array<char, PAGE_SIZE>& getData();
+    std::array<char, PAGE_SIZE> &getData();
 
     page_id_t getPageID() const;
     void setPageID(page_id_t);
@@ -38,14 +38,14 @@ public:
     void clearData();
     bool hasSpace(size_t keySize, size_t valueSize);
 
-    PageHeader* getHeader();
+    PageHeader *getHeader();
 
-    bool insert(const std::string& key, const std::string& value);
-    std::optional<std::string> get(const std::string& key);
-    bool deletePair(const std::string& key);
-    bool update(const std::string& key, const std::string& value);
+    bool insert(const std::string &key, const std::string &value);
+    std::optional<std::string> get(const std::string &key);
+    bool deletePair(const std::string &key);
+    bool update(const std::string &key, const std::string &value);
 
-private:
+  private:
     std::optional<RecordInfo> findRecord(const std::string &key);
     page_id_t pageID;
     std::array<char, PAGE_SIZE> data;

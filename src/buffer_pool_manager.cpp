@@ -1,8 +1,8 @@
 #include "buffer_pool_manager.h"
 
 #include <algorithm>
-#include <stdexcept>
 #include <iostream>
+#include <stdexcept>
 
 BufferPoolManager::BufferPoolManager() : bufferPool(BUFFER_POOL_SIZE) {
     for (size_t i = 0; i < BUFFER_POOL_SIZE; i++) {
@@ -93,7 +93,6 @@ Page *BufferPoolManager::fetchPage(page_id_t pageID) {
     replacer.setEvictable(frame, false);
     return &p;
 }
-
 
 Page *BufferPoolManager::newPage() {
     auto ff = getFreeFrame();
